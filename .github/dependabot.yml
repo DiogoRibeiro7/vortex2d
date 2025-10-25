@@ -1,0 +1,63 @@
+version: 2
+
+updates:
+  # --- Python (Poetry / pip) dependencies from pyproject.toml ---
+  - package-ecosystem: "pip"
+    directory: "/"                  # looks at pyproject.toml / poetry.lock in repo root
+    schedule:
+      interval: "weekly"            # options: daily, weekly, monthly
+      day: "monday"
+      time: "06:30"
+      timezone: "Europe/Lisbon"
+    open-pull-requests-limit: 10
+    versioning-strategy: increase-if-necessary
+    rebase-strategy: auto
+    labels: ["dependencies", "python"]
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+      include: "scope"
+    # Group related updates to reduce PR noise
+    groups:
+      runtime:
+        patterns:
+          - "numpy"
+          - "matplotlib"
+      lint-type:
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "types-*"
+      testing:
+        patterns:
+          - "pytest*"
+      tooling:
+        patterns:
+          - "pre-commit"
+          - "poetry-core"
+          - "poetry"
+    # (Optional) Hold back breaking majors for critical libs until you’re ready
+    ignore:
+      - dependency-name: "numpy"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "matplotlib"
+        update-types: ["version-update:semver-major"]
+
+  # --- GitHub Actions workflow dependencies in .github/workflows ---
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:45"
+      timezone: "Europe/Lisbon"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "github-actions"]
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      actions:
+        patterns:
+          - "actions/*"
+          - "snok/*"
