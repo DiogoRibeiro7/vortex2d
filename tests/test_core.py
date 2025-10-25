@@ -12,6 +12,7 @@ def test_velocity_shape():
     u = sim.velocities()
     assert u.shape == x.shape
 
+
 def test_total_circulation_conserved():
     x = np.array([[0.0, 0.0], [0.2, 0.0]], dtype=float)
     g = np.array([2.0, -2.0], dtype=float)

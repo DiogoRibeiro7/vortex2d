@@ -19,10 +19,13 @@ def main() -> None:
     )
 
     tracers = PassiveTracers2D(
-        positions=np.stack([
-            np.linspace(-0.25, 0.25, 41),
-            np.zeros(41),
-        ], axis=1),
+        positions=np.stack(
+            [
+                np.linspace(-0.25, 0.25, 41),
+                np.zeros(41),
+            ],
+            axis=1,
+        ),
     )
     for _ in range(800):
         dt = sim.suggest_dt(cfl=0.25, floor=5e-4)
@@ -37,6 +40,7 @@ def main() -> None:
         ny=72,
         quiver_subsample=8,
     )
+
 
 if __name__ == "__main__":
     main()

@@ -21,10 +21,13 @@ def main() -> None:
     )
 
     tracers = PassiveTracers2D(
-        positions=np.stack([
-            np.linspace(-0.25, 0.25, 61),
-            np.zeros(61),
-        ], axis=1),
+        positions=np.stack(
+            [
+                np.linspace(-0.25, 0.25, 61),
+                np.zeros(61),
+            ],
+            axis=1,
+        ),
     )
 
     def adaptive_dt_supplier(
@@ -56,6 +59,7 @@ def main() -> None:
         save_path=None,
         fps=30,
     )
+
 
 if __name__ == "__main__":
     main()

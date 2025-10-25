@@ -1,0 +1,27 @@
+site_name: vortex2d
+site_url: https://diogoribeiro7.github.io/vortex2d
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - content.code.copy
+nav:
+  - Home: index.md
+  - Tutorials:
+      - Dipole: tutorials/dipole.md
+  - API:
+      - VortexSystem2D: api/vortexsystem.md
+      - Plotting: api/plotting.md
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            docstring_style: numpy
+            show_source: false
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
