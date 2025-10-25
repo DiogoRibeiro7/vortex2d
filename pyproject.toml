@@ -1,0 +1,52 @@
+[tool.poetry]
+name = "vortex2d"
+version = "0.1.0"
+description = "A minimal, production-grade 2D vortex particle method (Gaussian-core) with RK4, core-spreading viscosity, plotting, and animations."
+authors = ["Diogo Ribeiro <you@example.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/DiogoRibeiro7/vortex2d"
+repository = "https://github.com/DiogoRibeiro7/vortex2d"
+keywords = ["CFD", "vortex method", "Lagrangian", "incompressible flow", "Gaussian core"]
+packages = [{ include = "vortex2d", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+numpy = "^2.0.0"
+matplotlib = { version = "^3.8.0", optional = true }
+
+[tool.poetry.extras]
+plot = ["matplotlib"]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.0"
+mypy = "^1.11.0"
+ruff = "^0.6.0"
+pre-commit = "^3.7.0"
+types-requests = "^2.31.0.6"
+
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E","F","I","B","UP"]
+ignore = ["E203"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_any_generics = true
+no_implicit_optional = true
+check_untyped_defs = true
+pretty = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-q"
