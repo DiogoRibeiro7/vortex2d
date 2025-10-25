@@ -1,8 +1,8 @@
 from .vortex2d import (
-    VortexSystem2D,
+    AnimationConfig,
     PassiveTracers2D,
     VortexState,
-    AnimationConfig,
+    VortexSystem2D,
     plot_snapshot,
     run_animation,
 )

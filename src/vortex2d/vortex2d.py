@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator, Sequence
+
+# Standard library
 from dataclasses import dataclass
-from typing import Iterable, Literal, Optional, Tuple
+from typing import Any, Literal
 
-import numpy as np
-from numpy.typing import NDArray
+# Third-party
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib import animation
+from matplotlib.streamplot import StreamplotSet
+from numpy.typing import NDArray
 
-FloatArray = NDArray[np.floating]
+FloatArray = NDArray[np.float64]
 
 
-def _as_float_array(x: np.ndarray | list | tuple, name: str) -> FloatArray:
+def _as_float_array(
+    x: np.ndarray | Sequence[Sequence[float]] | Sequence[float],
+    name: str,
+) -> FloatArray:
     """Convert input to contiguous float64 with basic validation."""
     arr = np.asarray(x, dtype=np.float64)
     if not np.isfinite(arr).all():
@@ -72,14 +80,16 @@ class VortexSystem2D:
     @property
     def nu(self) -> float: return self._nu
     @property
-    def positions(self) -> FloatArray: return self._x.copy()
+    def positions(self) -> FloatArray:
+        return np.asarray(self._x.copy(), dtype=np.float64)
     @property
-    def gamma(self) -> FloatArray: return self._gamma.copy()
+    def gamma(self) -> FloatArray:
+        return np.asarray(self._gamma.copy(), dtype=np.float64)
     @property
     def total_circulation(self) -> float: return float(self._gamma.sum())
 
     # ------------- Core kernels --------------
-    def velocities(self, xq: Optional[FloatArray] = None) -> FloatArray:
+    def velocities(self, xq: FloatArray | None = None) -> FloatArray:
         """
         Induced velocity at query points via Gaussian-regularized Biot–Savart.
 
@@ -113,7 +123,7 @@ class VortexSystem2D:
         kxr = np.stack((-r[..., 1], r[..., 0]), axis=2)     # (k × r) in 2D
         coef = (gamma / (2.0 * np.pi))[None, :, None]       # broadcast Γ_j/(2π)
         u = np.sum(coef * kxr * inv_r2[..., None] * f[..., None], axis=1)
-        return u
+        return np.asarray(u, dtype=np.float64)
 
     # ------------- Time stepping -------------
     def step(
@@ -121,8 +131,8 @@ class VortexSystem2D:
         dt: float,
         *,
         integrator: Literal["euler", "rk2", "rk4"] = "rk4",
-        clamp_sigma_min: Optional[float] = None,
-        clamp_sigma_max: Optional[float] = None,
+        clamp_sigma_min: float | None = None,
+        clamp_sigma_max: float | None = None,
     ) -> None:
         """Advance one step (default RK4)."""
         if not (np.isfinite(dt) and dt > 0):
@@ -167,7 +177,7 @@ class VortexSystem2D:
             return floor
         return max(cfl * self.sigma / umax, floor)
 
-    def diagnostics(self) -> dict:
+    def diagnostics(self) -> dict[str, Any]:
         """Basic diagnostics for logging."""
         u = self.velocities(self._x)
         speed = np.linalg.norm(u, axis=1)
@@ -206,14 +216,14 @@ class VortexSystem2D:
     # --------- Initialization helper ----------
     @staticmethod
     def lamb_oseen_vortex(
-        center: Tuple[float, float],
+        center: tuple[float, float],
         circulation: float,
         sigma: float,
         *,
         n_radial: int = 20,
         n_angular: int = 60,
         r_max: float | None = None,
-    ) -> Tuple[FloatArray, FloatArray]:
+    ) -> tuple[FloatArray, FloatArray]:
         """Discretize a Lamb–Oseen vortex into particles on rings."""
         if r_max is None:
             r_max = 4.0 * sigma
@@ -244,7 +254,7 @@ class PassiveTracers2D:
 
     @property
     def positions(self) -> FloatArray:
-        return self._x.copy()
+        return np.asarray(self._x.copy(), dtype=np.float64)
 
     def step(
         self,
@@ -279,14 +289,14 @@ class PassiveTracers2D:
 def plot_snapshot(
     system: VortexSystem2D,
     *,
-    tracers: Optional[PassiveTracers2D] = None,
-    domain: Tuple[float, float, float, float] = (-0.6, 0.6, -0.45, 0.45),
+    tracers: PassiveTracers2D | None = None,
+    domain: tuple[float, float, float, float] = (-0.6, 0.6, -0.45, 0.45),
     nx: int = 96,
     ny: int = 72,
     quiver_subsample: int = 6,
     show_particles: bool = True,
-    figsize: Tuple[float, float] = (8.0, 6.0),
-    savepath: Optional[str] = None,
+    figsize: tuple[float, float] = (8.0, 6.0),
+    savepath: str | None = None,
 ) -> None:
     """Render a single snapshot: streamlines + (optional) quiver + particles + tracers."""
     xmin, xmax, ymin, ymax = domain
@@ -313,17 +323,24 @@ def plot_snapshot(
         g_abs = np.abs(g)
         s = 30.0 * (g_abs / (g_abs.max() + 1e-15)) + 5.0
         colors = np.where(g >= 0.0, "tab:blue", "tab:red")
-        ax.scatter(x[:, 0], x[:, 1], s=s, c=colors, edgecolors="k", linewidths=0.3, alpha=0.85, label="vortex particles")
+        ax.scatter(
+        x[:, 0], x[:, 1], s=s, c=colors,
+        edgecolors="k", linewidths=0.3, alpha=0.85,
+        label="vortex particles",
+    )
 
     if tracers is not None:
         xt = tracers.positions
         ax.scatter(xt[:, 0], xt[:, 1], s=15.0, c="black", alpha=0.8, marker=".", label="tracers")
 
-    ax.set_xlim(xmin, xmax); ax.set_ylim(ymin, ymax)
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
     ax.set_aspect("equal", adjustable="box")
     ax.set_title(f"Vortex method snapshot — t = {system.time:.3f} s, σ = {system.sigma:.4f} m")
-    ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
-    ax.grid(True, alpha=0.2); ax.legend(loc="upper right", frameon=True, fontsize=9)
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.grid(True, alpha=0.2)
+    ax.legend(loc="upper right", frameon=True, fontsize=9)
 
     if savepath is not None:
         fig.savefig(savepath, dpi=150, bbox_inches="tight")
@@ -336,13 +353,13 @@ def plot_snapshot(
 @dataclass(slots=True)
 class AnimationConfig:
     """Configuration for run_animation()."""
-    domain: Tuple[float, float, float, float] = (-0.6, 0.6, -0.45, 0.45)
+    domain: tuple[float, float, float, float] = (-0.6, 0.6, -0.45, 0.45)
     nx: int = 96
     ny: int = 72
     quiver_subsample: int = 8
     show_particles: bool = True
     show_tracers: bool = True
-    figsize: Tuple[float, float] = (8.0, 6.0)
+    figsize: tuple[float, float] = (8.0, 6.0)
     render_mode: Literal["quiver", "streamplot"] = "quiver"
     cbar_label: str = "Speed [m/s]"
 
@@ -350,30 +367,35 @@ class AnimationConfig:
 def run_animation(
     system: VortexSystem2D,
     *,
-    tracers: Optional[PassiveTracers2D],
+    tracers: PassiveTracers2D | None,
     steps: int,
     dt_supplier: Iterable[float] | float,
-    config: AnimationConfig = AnimationConfig(),
-    save_path: Optional[str] = None,
+    config: AnimationConfig | None = None,
+    save_path: str | None = None,
     fps: int = 30,
 ) -> None:
     """Animate a simulation loop and optionally save to file."""
+    if config is None:
+        config = AnimationConfig()
+
+    # Provide an iterator over dt
+    def _const_dt_iter(val: float) -> Iterator[float]:
+        while True:
+            yield float(val)
+
     if isinstance(dt_supplier, (float, int)):
-        def _dt_iter():
-            while True:
-                yield float(dt_supplier)
-        dt_iter = _dt_iter()
+        dt_iter: Iterator[float] = _const_dt_iter(float(dt_supplier))
     else:
         dt_iter = iter(dt_supplier)
 
     xmin, xmax, ymin, ymax = config.domain
     X, Y, U, V = system.sample_velocity_grid(xmin, xmax, ymin, ymax, config.nx, config.ny)
-    speed = np.sqrt(U * U + V * V)
+    speed = (U * U + V * V) ** 0.5
 
     fig, ax = plt.subplots(figsize=config.figsize)
-    cax = None
-    quiv = None
-    stream = None
+    cax: Any | None = None
+    quiv: Any | None = None
+    stream: StreamplotSet | None = None
 
     if config.render_mode == "quiver":
         quiv = ax.quiver(X, Y, U, V, speed, cmap="viridis", angles="xy", scale_units="xy")
@@ -396,52 +418,53 @@ def run_animation(
         g_abs = np.abs(g)
         sizes = 30.0 * (g_abs / (g_abs.max() + 1e-15)) + 5.0
         colors = np.where(g >= 0.0, "tab:blue", "tab:red")
-        particles_sc = ax.scatter(x[:, 0], x[:, 1], s=sizes, c=colors, edgecolors="k", linewidths=0.3, alpha=0.85)
+        particles_sc = ax.scatter(
+            x[:, 0], x[:, 1], s=sizes, c=colors, edgecolors="k", linewidths=0.3, alpha=0.85
+        )
 
     tracers_sc = None
     if config.show_tracers and (tracers is not None):
         xt = tracers.positions
         tracers_sc = ax.scatter(xt[:, 0], xt[:, 1], s=15.0, c="black", alpha=0.9, marker=".")
 
-    ax.set_xlim(xmin, xmax); ax.set_ylim(ymin, ymax)
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
     ax.set_aspect("equal", adjustable="box")
     ttl = ax.set_title(f"t = {system.time:.3f} s, σ = {system.sigma:.4f} m")
-    ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
     ax.grid(True, alpha=0.2)
 
-    def _update(_frame_idx: int):
+    def _update(_frame_idx: int) -> list[Any]:
+        # Advance
         dt = next(dt_iter)
         system.step(dt, integrator="rk4")
         if tracers is not None and config.show_tracers:
             tracers.step(system, dt, integrator="rk4")
 
+        # Recompute field
         X, Y, U, V = system.sample_velocity_grid(xmin, xmax, ymin, ymax, config.nx, config.ny)
-        speed = np.sqrt(U * U + V * V)
+        speed = (U * U + V * V) ** 0.5
 
+        # Update renderer
         if quiv is not None:
             quiv.set_UVC(U, V, speed)
         else:
-            for art in stream.lines.collections:  # type: ignore[attr-defined]
-                art.remove()
-            for art in stream.arrows:             # type: ignore[attr-defined]
-                art.remove()
-            stream.lines = None                    # type: ignore[attr-defined]
-            stream.arrows = []                     # type: ignore[attr-defined]
-            new_stream = ax.streamplot(
+            # Clear previous stream artists and redraw
+            for coll in list(ax.collections):
+                coll.remove()
+            stream_new = ax.streamplot(
                 X, Y, U, V, density=1.2, linewidth=1.0, color=speed, cmap="viridis", arrowsize=1.0
             )
-            nonlocal stream
-            stream = new_stream                    # type: ignore[assignment]
+            # update colorbar mapping if present
             if cax is not None:
-                cax.update_normal(stream.lines)
+                cax.update_normal(stream_new.lines)
 
+        # Update scatter artists
         if particles_sc is not None:
-            xp = system.positions
-            particles_sc.set_offsets(xp)
-
+            particles_sc.set_offsets(system.positions)
         if tracers_sc is not None and tracers is not None:
-            xt = tracers.positions
-            tracers_sc.set_offsets(xt)
+            tracers_sc.set_offsets(tracers.positions)
 
         ttl.set_text(f"t = {system.time:.3f} s, σ = {system.sigma:.4f} m")
         return [ttl]

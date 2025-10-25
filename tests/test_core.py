@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 import numpy as np
+
 from vortex2d import VortexSystem2D
+
 
 def test_velocity_shape():
     x = np.array([[0.0, 0.0], [0.1, 0.0]], dtype=float)
