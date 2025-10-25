@@ -1,19 +1,59 @@
+
 from __future__ import annotations
 
-import math
-from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
+from collections.abc import Iterable, Iterator, Sequence
 
-import matplotlib.pyplot as plt
+import math
 import numpy as np
+from numpy.typing import NDArray
+import matplotlib.pyplot as plt
 from matplotlib import animation
 from matplotlib.streamplot import StreamplotSet
-from numpy.typing import NDArray
 
+
+# ---------------------------
+# Optional Numba (JIT) support
+# ---------------------------
+try:
+    from numba import njit, prange  # type: ignore
+    _NUMBA = True
+except Exception:  # pragma: no cover
+    _NUMBA = False
+
+# JIT kernel: direct velocities with Gaussian regularization
+def _maybe_njit(func):
+    # Decorate with njit if available; else return original
+    if _NUMBA:  # pragma: no cover
+        return njit(cache=True, fastmath=True, nogil=True, parallel=False)(func)  # type: ignore[misc]
+    return func
+
+@_maybe_njit
+def _vel_direct_jit(xq: np.ndarray, xsrc: np.ndarray, gamma: np.ndarray, sigma2: float, eps: float) -> np.ndarray:
+    M = xq.shape[0]
+    N = xsrc.shape[0]
+    out = np.zeros((M, 2), dtype=np.float64)
+    for i in range(M):
+        ui0 = 0.0
+        ui1 = 0.0
+        xqi0 = xq[i, 0]
+        xqi1 = xq[i, 1]
+        for j in range(N):
+            rx = xqi0 - xsrc[j, 0]
+            ry = xqi1 - xsrc[j, 1]
+            r2 = rx * rx + ry * ry
+            inv_r2 = 1.0 / (r2 + eps)
+            f = 1.0 - math.exp(-r2 / (2.0 * sigma2)) if sigma2 > 0.0 else 1.0
+            coef = gamma[j] * inv_r2 * f / (2.0 * math.pi)
+            # k x r = (-ry, rx)
+            ui0 += -ry * coef
+            ui1 +=  rx * coef
+        out[i, 0] = ui0
+        out[i, 1] = ui1
+    return out
 FloatArray = NDArray[np.float64]
 ArrayLike2D = np.ndarray | Sequence[Sequence[float]]
-
 
 # ---------------------------
 # Utility
@@ -27,7 +67,6 @@ def _as_float_array2(x: ArrayLike2D, name: str) -> FloatArray:
         raise ValueError(f"{name} contains non-finite values.")
     return np.ascontiguousarray(arr)
 
-
 def _as_float_array1(x: np.ndarray | Sequence[float], name: str) -> NDArray[np.float64]:
     arr = np.asarray(x, dtype=np.float64)
     if arr.ndim != 1:
@@ -36,18 +75,16 @@ def _as_float_array1(x: np.ndarray | Sequence[float], name: str) -> NDArray[np.f
         raise ValueError(f"{name} contains non-finite values.")
     return np.ascontiguousarray(arr)
 
-
 # ---------------------------
 # Core state
 # ---------------------------
 @dataclass(slots=True)
 class VortexState:
-    x: FloatArray  # (N,2) positions
-    gamma: FloatArray  # (N,) circulations
-    sigma: float  # core size
-    nu: float  # viscosity
-    t: float  # time
-
+    x: FloatArray          # (N,2) positions
+    gamma: FloatArray      # (N,) circulations
+    sigma: float           # core size
+    nu: float              # viscosity
+    t: float               # time
 
 # ---------------------------
 # Backends
@@ -60,12 +97,10 @@ class PeriodicFFTConfig:
     nx, ny: grid resolution
     splat_sigma: deposition width for particle → grid (meters)
     """
-
     domain: tuple[float, float, float, float] = (-0.5, 0.5, -0.5, 0.5)
     nx: int = 128
     ny: int = 128
     splat_sigma: float = 0.02  # deposition kernel width
-
 
 @dataclass(slots=True)
 class TreecodeConfig:
@@ -74,10 +109,8 @@ class TreecodeConfig:
     theta: opening angle (smaller -> more accurate)
     max_leaf: maximum particles per leaf node
     """
-
     theta: float = 0.5
     max_leaf: int = 32
-
 
 @dataclass(slots=True)
 class PSEConfig:
@@ -86,14 +119,30 @@ class PSEConfig:
     eps: kernel width for PSE operator (meters)
     substeps: do 'substeps' micro steps per global step for stability
     """
-
     eps: float = 0.03
     substeps: int = 1
-
 
 # ---------------------------
 # Main system
 # ---------------------------
+
+
+@dataclass(slots=True)
+class NumbaConfig:
+    """Toggle Numba JIT for direct backend.
+    If enabled and numba is available, use compiled kernel for pairwise velocity.
+    """
+    enabled: bool = False
+
+@dataclass(slots=True)
+class ChunkConfig:
+    """Chunking to reduce peak memory in direct backend.
+
+    query_batch: number of query points per chunk (None -> no chunking).
+    source_batch: number of source points per chunk for big-N accumulation.
+    """
+    query_batch: int | None = 20000
+    source_batch: int | None = None
 class VortexSystem2D:
     """2D vortex particle method with multiple velocity backends and diffusion models."""
 
@@ -130,31 +179,27 @@ class VortexSystem2D:
         self._pfft = periodic_fft or PeriodicFFTConfig()
         self._tree = treecode or TreecodeConfig()
         self._pse = pse
+        self._numba = numba_cfg or NumbaConfig()
+        self._chunk = chunking or ChunkConfig()
 
     # -------- properties --------
     @property
-    def time(self) -> float:
-        return self._t
+    def time(self) -> float: return self._t
 
     @property
-    def sigma(self) -> float:
-        return float(np.sqrt(self._sigma2))
+    def sigma(self) -> float: return float(np.sqrt(self._sigma2))
 
     @property
-    def nu(self) -> float:
-        return self._nu
+    def nu(self) -> float: return self._nu
 
     @property
-    def positions(self) -> FloatArray:
-        return np.asarray(self._x.copy(), dtype=np.float64)
+    def positions(self) -> FloatArray: return np.asarray(self._x.copy(), dtype=np.float64)
 
     @property
-    def gamma(self) -> FloatArray:
-        return np.asarray(self._gamma.copy(), dtype=np.float64)
+    def gamma(self) -> FloatArray: return np.asarray(self._gamma.copy(), dtype=np.float64)
 
     @property
-    def total_circulation(self) -> float:
-        return float(self._gamma.sum())
+    def total_circulation(self) -> float: return float(self._gamma.sum())
 
     # -------- velocities --------
     def velocities(self, xq: FloatArray | None = None) -> FloatArray:
@@ -172,19 +217,69 @@ class VortexSystem2D:
         raise ValueError("Unknown backend.")
 
     # --- Direct O(N^2) with Gaussian cutoff ---
-    def _velocities_direct(self, xq: FloatArray) -> FloatArray:
+    
+def _velocities_direct(self, xq: FloatArray) -> FloatArray:
         x_src = self._x
         gamma = self._gamma
         sigma2 = self._sigma2
 
-        r = xq[:, None, :] - x_src[None, :, :]  # (M,N,2)
-        r2 = np.sum(r * r, axis=2)  # (M,N)
-        inv_r2 = 1.0 / (r2 + self._eps)
-        f = 1.0 - np.exp(-r2 / (2.0 * sigma2)) if sigma2 > 0.0 else np.ones_like(r2)
-        kxr = np.stack((-r[..., 1], r[..., 0]), axis=2)  # perpendicular
-        coef = (gamma / (2.0 * np.pi))[None, :, None]
-        u = np.sum(coef * kxr * inv_r2[..., None] * f[..., None], axis=1)
-        return np.asarray(u, dtype=np.float64)
+        # If chunking disabled, try to use numba JIT if requested; else vectorized numpy.
+        qb = self._chunk.query_batch
+        sb = self._chunk.source_batch
+
+        def numpy_pair(xq_chunk: np.ndarray, xsrc_chunk: np.ndarray, gamma_chunk: np.ndarray) -> np.ndarray:
+            r = xq_chunk[:, None, :] - xsrc_chunk[None, :, :]      # (m,n,2)
+            r2 = np.sum(r * r, axis=2)                              # (m,n)
+            inv_r2 = 1.0 / (r2 + self._eps)
+            f = 1.0 - np.exp(-r2 / (2.0 * sigma2)) if sigma2 > 0.0 else np.ones_like(r2)
+            kxr = np.stack((-r[..., 1], r[..., 0]), axis=2)         # (m,n,2)
+            coef = (gamma_chunk / (2.0 * np.pi))[None, :, None]
+            return np.sum(coef * kxr * inv_r2[..., None] * f[..., None], axis=1)
+
+        # Strategy:
+        #  - If sb is set, accumulate over source batches to avoid (M,N) allocations.
+        #  - Always process queries in chunks of size qb to cap peak memory.
+        M = xq.shape[0]
+        out = np.zeros((M, 2), dtype=np.float64)
+
+        if sb is not None and sb > 0:
+            # Accumulate source batches
+            q_slices = [slice(i, min(i + (qb or M), M)) for i in range(0, M, (qb or M))]
+            for qs in q_slices:
+                acc = np.zeros((qs.stop - qs.start, 2), dtype=np.float64)
+                if self._numba.enabled and _NUMBA:
+                    # Accumulate using numba over source chunks
+                    for j in range(0, x_src.shape[0], sb):
+                        js = slice(j, min(j + sb, x_src.shape[0]))
+                        acc += _vel_direct_jit(xq[qs], x_src[js], gamma[js], sigma2, self._eps)
+                else:
+                    for j in range(0, x_src.shape[0], sb):
+                        js = slice(j, min(j + sb, x_src.shape[0]))
+                        acc += numpy_pair(xq[qs], x_src[js], gamma[js])
+                out[qs] = acc
+            return np.asarray(out, dtype=np.float64)
+
+        # No source chunking
+        if self._numba.enabled and _NUMBA:
+            if qb is None:
+                return _vel_direct_jit(xq, x_src, gamma, sigma2, self._eps)
+            k = 0
+            while k < M:
+                ks = slice(k, min(k + qb, M))
+                out[ks] = _vel_direct_jit(xq[ks], x_src, gamma, sigma2, self._eps)
+                k = ks.stop
+            return np.asarray(out, dtype=np.float64)
+
+        # Pure NumPy with query chunking
+        if qb is None:
+            return np.asarray(numpy_pair(xq, x_src, gamma), dtype=np.float64)
+        k = 0
+        while k < M:
+            ks = slice(k, min(k + qb, M))
+            out[ks] = numpy_pair(xq[ks], x_src, gamma)
+            k = ks.stop
+        return np.asarray(out, dtype=np.float64)
+
 
     # --- Periodic via FFT surrogate ---
     def _velocities_periodic_fft(self, xq: FloatArray, cfg: PeriodicFFTConfig) -> FloatArray:
@@ -203,9 +298,9 @@ class VortexSystem2D:
         # Splat vorticity
         Xc = (self._x - np.array([xmin, ymin])) / np.array([dx, dy])
         grid = np.zeros((ny, nx), dtype=np.float64)
-        s2 = (cfg.splat_sigma / min(dx, dy)) ** 2 + 1e-12
+        s2 = (cfg.splat_sigma / min(dx, dy))**2 + 1e-12
 
-        for (cx, cy), g in zip(Xc, self._gamma, strict=False):
+        for (cx, cy), g in zip(Xc, self._gamma):
             ix = int(np.floor(cx)) % nx
             iy = int(np.floor(cy)) % ny
             # neighborhood radius ~ 3 sigma
@@ -213,23 +308,23 @@ class VortexSystem2D:
             xs = np.arange(ix - rad, ix + rad + 1)
             ys = np.arange(iy - rad, iy + rad + 1)
             XX, YY = np.meshgrid(xs, ys, indexing="xy")
-            dxg = XX - cx
-            dyg = YY - cy
-            w = np.exp(-(dxg * dxg + dyg * dyg) / (2.0 * s2))
+            dxg = (XX - cx)
+            dyg = (YY - cy)
+            w = np.exp(-(dxg*dxg + dyg*dyg) / (2.0 * s2))
             grid[(YY % ny, XX % nx)] += g * w
 
         # FFT Poisson solve
         ky = 2.0 * np.pi * np.fft.fftfreq(ny, d=dy)
         kx = 2.0 * np.pi * np.fft.fftfreq(nx, d=dx)
         KX, KY = np.meshgrid(kx, ky, indexing="xy")
-        K2 = KX * KX + KY * KY
+        K2 = KX*KX + KY*KY
         omega_hat = np.fft.fft2(grid / (dx * dy))
         psi_hat = np.zeros_like(omega_hat)
         psi_hat[K2 != 0.0] = -omega_hat[K2 != 0.0] / K2[K2 != 0.0]  # zero-mean gauge
 
         # Velocity on grid: u = (∂ψ/∂y, -∂ψ/∂x)
-        dpsidx = np.fft.ifft2(1j * KX * psi_hat).real
-        dpsidy = np.fft.ifft2(1j * KY * psi_hat).real
+        dpsidx = np.fft.ifft2(1j*KX*psi_hat).real
+        dpsidy = np.fft.ifft2(1j*KY*psi_hat).real
         Ux = dpsidy
         Uy = -dpsidx
 
@@ -242,16 +337,10 @@ class VortexSystem2D:
 
         def sample(A: np.ndarray) -> np.ndarray:
             i00 = (gy % ny, gx % nx)
-            i10 = (gy % ny, (gx + 1) % nx)
-            i01 = ((gy + 1) % ny, gx % nx)
-            i11 = ((gy + 1) % ny, (gx + 1) % nx)
-            return np.asarray(
-                ((1 - tx) * (1 - ty)) * A[i00]
-                + (tx * (1 - ty)) * A[i10]
-                + ((1 - tx) * ty) * A[i01]
-                + (tx * ty) * A[i11],
-                dtype=np.float64,
-            )
+            i10 = (gy % ny, (gx+1) % nx)
+            i01 = ((gy+1) % ny, gx % nx)
+            i11 = ((gy+1) % ny, (gx+1) % nx)
+            return np.asarray(((1-tx)*(1-ty))*A[i00] + (tx*(1-ty))*A[i10] + ((1-tx)*ty)*A[i01] + (tx*ty)*A[i11], dtype=np.float64)
 
         u = np.stack([sample(Ux), sample(Uy)], axis=1)
         return np.asarray(u, dtype=np.float64)
@@ -261,10 +350,10 @@ class VortexSystem2D:
         """O(N log N) approximate velocity using a quad-tree and opening angle θ."""
         # Build tree bounding box
         pts = self._x
-        xmin = float(pts[:, 0].min())
-        xmax = float(pts[:, 0].max())
-        ymin = float(pts[:, 1].min())
-        ymax = float(pts[:, 1].max())
+        xmin = float(pts[:,0].min())
+        xmax = float(pts[:,0].max())
+        ymin = float(pts[:,1].min())
+        ymax = float(pts[:,1].max())
         # pad box
         pad = 1e-9 + 0.05 * max(xmax - xmin, ymax - ymin)
         xmin -= pad
@@ -274,11 +363,8 @@ class VortexSystem2D:
 
         # Node structure
         class Node:
-            __slots__ = ("xmin", "xmax", "ymin", "ymax", "idx", "children", "gamma_sum", "centroid")
-
-            def __init__(
-                self, xmin: float, xmax: float, ymin: float, ymax: float, idx: np.ndarray
-            ) -> None:
+            __slots__ = ("xmin","xmax","ymin","ymax","idx","children","gamma_sum","centroid")
+            def __init__(self, xmin: float, xmax: float, ymin: float, ymax: float, idx: np.ndarray) -> None:
                 self.xmin, self.xmax, self.ymin, self.ymax = xmin, xmax, ymin, ymax
                 self.idx = idx
                 self.children: list[Node] | None = None
@@ -293,41 +379,40 @@ class VortexSystem2D:
         self_gamma = self._gamma
 
         def build(xmin: float, xmax: float, ymin: float, ymax: float, idx: np.ndarray) -> Node:
-            node = Node(xmin, xmax, ymin, ymax, idx)
+            node = Node(xmin,xmax,ymin,ymax,idx)
             if idx.size <= cfg.max_leaf:
                 return node
             # split
-            xm = 0.5 * (xmin + xmax)
-            ym = 0.5 * (ymin + ymax)
-            q1 = idx[(self_pos[idx, 0] <= xm) & (self_pos[idx, 1] <= ym)]
-            q2 = idx[(self_pos[idx, 0] > xm) & (self_pos[idx, 1] <= ym)]
-            q3 = idx[(self_pos[idx, 0] <= xm) & (self_pos[idx, 1] > ym)]
-            q4 = idx[(self_pos[idx, 0] > xm) & (self_pos[idx, 1] > ym)]
+            xm = 0.5*(xmin+xmax)
+            ym = 0.5*(ymin+ymax)
+            q1 = idx[(self_pos[idx,0] <= xm) & (self_pos[idx,1] <= ym)]
+            q2 = idx[(self_pos[idx,0] >  xm) & (self_pos[idx,1] <= ym)]
+            q3 = idx[(self_pos[idx,0] <= xm) & (self_pos[idx,1] >  ym)]
+            q4 = idx[(self_pos[idx,0] >  xm) & (self_pos[idx,1] >  ym)]
             boxes = [
-                (xmin, xm, ymin, ym, q1),
-                (xm, xmax, ymin, ym, q2),
-                (xmin, xm, ym, ymax, q3),
-                (xm, xmax, ym, ymax, q4),
+                (xmin,xm,ymin,ym,q1),
+                (xm,xmax,ymin,ym,q2),
+                (xmin,xm,ym,ymax,q3),
+                (xm,xmax,ym,ymax,q4),
             ]
             kids = []
-            for ax, bx, ay, by, ii in boxes:
+            for (ax,bx,ay,by,ii) in boxes:
                 if ii.size > 0:
-                    kids.append(build(ax, bx, ay, by, ii))
+                    kids.append(build(ax,bx,ay,by,ii))
             if kids:
                 node.children = kids
             return node
 
-        root = build(xmin, xmax, ymin, ymax, np.arange(pts.shape[0]))
+        root = build(xmin,xmax,ymin,ymax,np.arange(pts.shape[0]))
 
         sigma2 = self._sigma2
-
         def kernel(qpos: np.ndarray, qgamma: float, p: np.ndarray) -> np.ndarray:
             r = p - qpos
-            r2 = r[0] * r[0] + r[1] * r[1]
-            f = 1.0 - math.exp(-r2 / (2.0 * sigma2))
-            inv_r2 = 1.0 / (r2 + 1e-15)
+            r2 = (r[0]*r[0] + r[1]*r[1])
+            f = 1.0 - math.exp(-r2/(2.0*sigma2))
+            inv_r2 = 1.0/(r2 + 1e-15)
             kx = np.array([-r[1], r[0]])
-            return np.asarray((qgamma / (2.0 * np.pi)) * kx * inv_r2 * f, dtype=np.float64)
+            return np.asarray((qgamma/(2.0*np.pi)) * kx * inv_r2 * f, dtype=np.float64)
 
         def size(node: Node) -> float:
             return float(max(node.xmax - node.xmin, node.ymax - node.ymin))
@@ -342,7 +427,7 @@ class VortexSystem2D:
                 dx = p[0] - cx
                 dy = p[1] - cy
                 dist = math.hypot(dx, dy) + 1e-15
-                if nd.children is None or (size(nd) / dist) < cfg.theta:
+                if nd.children is None or (size(nd)/dist) < cfg.theta:
                     out += kernel(nd.centroid, nd.gamma_sum, p)
                 else:
                     stack.extend(nd.children)
@@ -371,12 +456,12 @@ class VortexSystem2D:
                 x0 = self._x.copy()
                 # stages
                 k1 = self.velocities(x0)
-                k2 = self.velocities(x0 + 0.5 * dt_try * k1)
-                k3 = self.velocities(x0 + 0.75 * dt_try * k2)
+                k2 = self.velocities(x0 + 0.5*dt_try*k1)
+                k3 = self.velocities(x0 + 0.75*dt_try*k2)
                 # 3rd-order estimate
-                x3 = x0 + dt_try * (2 / 9 * k1 + 1 / 3 * k2 + 4 / 9 * k3)
+                x3 = x0 + dt_try * (2/9*k1 + 1/3*k2 + 4/9*k3)
                 # 2nd-order estimate (cheap)
-                x2 = x0 + dt_try * (0.5 * k1 + 0.5 * k2)
+                x2 = x0 + dt_try * (0.5*k1 + 0.5*k2)
                 # error
                 err = float(np.linalg.norm(x3 - x2, ord=np.inf))
                 # scale with sigma (typical length)
@@ -387,29 +472,29 @@ class VortexSystem2D:
                     self._after_advection(dt_try, clamp_sigma_min, clamp_sigma_max)
                     self._t += dt_try
                     # propose next dt
-                    fac = safety * (max(atol, 1e-15) / max(err, 1e-30)) ** 0.25
-                    dt_next = float(min(dt_max, max(dt_min, float(fac * dt_try))))
+                    fac = safety * (max(atol, 1e-15)/max(err, 1e-30))**0.25
+                    dt_next = float(min(dt_max, max(dt_min, float(fac*dt_try))))
                     return float(dt_next)
                 else:
                     # reject, shrink dt
-                    fac = safety * (max(atol, 1e-15) / max(err, 1e-30)) ** 0.25
-                    dt_try = max(dt_min, 0.2 * min(dt_try, fac * dt_try))
+                    fac = safety * (max(atol, 1e-15)/max(err, 1e-30))**0.25
+                    dt_try = max(dt_min, 0.2*min(dt_try, fac*dt_try))
         else:
             # Deterministic steppers with provided dt
             x0 = self._x
             if integrator == "euler":
                 u0 = self.velocities(x0)
-                x1 = x0 + dt * u0
+                x1 = x0 + dt*u0
             elif integrator == "rk2":
                 k1 = self.velocities(x0)
-                k2 = self.velocities(x0 + 0.5 * dt * k1)
-                x1 = x0 + dt * k2
+                k2 = self.velocities(x0 + 0.5*dt*k1)
+                x1 = x0 + dt*k2
             elif integrator == "rk4":
                 k1 = self.velocities(x0)
-                k2 = self.velocities(x0 + 0.5 * dt * k1)
-                k3 = self.velocities(x0 + 0.5 * dt * k2)
-                k4 = self.velocities(x0 + dt * k3)
-                x1 = x0 + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+                k2 = self.velocities(x0 + 0.5*dt*k1)
+                k3 = self.velocities(x0 + 0.5*dt*k2)
+                k4 = self.velocities(x0 + dt*k3)
+                x1 = x0 + (dt/6.0)*(k1 + 2*k2 + 2*k3 + k4)
             else:
                 raise ValueError("Unknown integrator.")
             self._x = x1
@@ -443,15 +528,15 @@ class VortexSystem2D:
         alpha = self._nu * dt / max(cfg.substeps, 1)
         for _ in range(max(cfg.substeps, 1)):
             r = x[:, None, :] - x[None, :, :]
-            r2 = np.sum(r * r, axis=2)
+            r2 = np.sum(r*r, axis=2)
             # normalized Gaussian weights
-            W = np.exp(-r2 / (2.0 * eps2))
+            W = np.exp(-r2 / (2.0*eps2))
             np.fill_diagonal(W, 0.0)
             # Row-normalize to preserve total gamma during exchange
             row_sum = W.sum(axis=1) + 1e-15
-            D = W / row_sum[:, None]
+            D = (W / row_sum[:, None])
             # Exchange towards neighbors (diffusive averaging)
-            g = (1.0 - alpha) * g + alpha * (D @ g)
+            g = (1.0 - alpha)*g + alpha*(D @ g)
         self._gamma = g
 
     # --------- Utilities ---------
@@ -540,21 +625,21 @@ class VortexSystem2D:
             a = np.zeros_like(s)
             abs_s = np.abs(s)
             # piecewise cubic (Keys' M4)
-            m1 = (abs_s <= 1) * (1.5 * abs_s**3 - 2.5 * abs_s**2 + 1)
-            m2 = ((abs_s > 1) & (abs_s < 2)) * (-0.5 * abs_s**3 + 2.5 * abs_s**2 - 4 * abs_s + 2)
+            m1 = (abs_s <= 1) * (1.5*abs_s**3 - 2.5*abs_s**2 + 1)
+            m2 = ((abs_s > 1) & (abs_s < 2)) * (-0.5*abs_s**3 + 2.5*abs_s**2 - 4*abs_s + 2)
             a = m1 + m2
             return np.asarray(a, dtype=np.float64)
 
         # Deposit gamma
-        for (xi, yi), gi in zip(self._x, self._gamma, strict=False):
+        for (xi, yi), gi in zip(self._x, self._gamma):
             gx = (xi - xmin) / dx
             gy = (yi - ymin) / dx
             ix = int(np.floor(gx))
             iy = int(np.floor(gy))
-            xs = np.arange(ix - 2, ix + 3)
-            ys = np.arange(iy - 2, iy + 3)
-            wx = m4(gx - xs)  # (5,)
-            wy = m4(gy - ys)  # (5,)
+            xs = np.arange(ix-2, ix+3)
+            ys = np.arange(iy-2, iy+3)
+            wx = m4(gx - xs)   # (5,)
+            wy = m4(gy - ys)   # (5,)
             W = wy[:, None] * wx[None, :]
             X, Y = np.meshgrid(xs, ys, indexing="xy")
             grid[(Y % ny, X % nx)] += gi * W
@@ -563,13 +648,13 @@ class VortexSystem2D:
         mask = np.abs(grid) > thresh_abs_gamma
         jj, ii = np.nonzero(mask)
         new_gamma = grid[jj, ii]
-        new_x = np.stack([xmin + (ii + 0.5) * dx, ymin + (jj + 0.5) * dx], axis=1)
+        new_x = np.stack([xmin + (ii + 0.5)*dx, ymin + (jj + 0.5)*dx], axis=1)
         if new_gamma.size == 0:
             return
         self._x = new_x.astype(np.float64)
         self._gamma = new_gamma.astype(np.float64)
         if sigma_target is not None:
-            self._sigma2 = float(sigma_target) ** 2
+            self._sigma2 = float(sigma_target)**2
 
     def merge_split(
         self,
@@ -594,10 +679,10 @@ class VortexSystem2D:
             if used[i]:
                 continue
             group = [i]
-            for j in range(i + 1, N):
+            for j in range(i+1, N):
                 if used[j]:
                     continue
-                if np.sign(g[i]) == np.sign(g[j]) and np.linalg.norm(x[i] - x[j]) < merge_radius:
+                if np.sign(g[i]) == np.sign(g[j]) and np.linalg.norm(x[i]-x[j]) < merge_radius:
                     group.append(j)
                     used[j] = True
             used[i] = True
@@ -612,14 +697,14 @@ class VortexSystem2D:
         if gamma_split is not None and gamma_split > 0:
             xs = []
             gs = []
-            for xi, gi in zip(x, g, strict=False):
+            for xi, gi in zip(x, g):
                 if abs(gi) > gamma_split:
                     # split along random small vector
                     d = 0.1 * self.sigma
                     xs.append(xi + np.array([d, 0]))
-                    gs.append(0.5 * gi)
+                    gs.append(0.5*gi)
                     xs.append(xi - np.array([d, 0]))
-                    gs.append(0.5 * gi)
+                    gs.append(0.5*gi)
                 else:
                     xs.append(xi)
                     gs.append(gi)
@@ -628,7 +713,6 @@ class VortexSystem2D:
 
         self._x = x
         self._gamma = g
-
 
 # ------------------------------
 # Tracers
@@ -641,30 +725,23 @@ class PassiveTracers2D:
     def positions(self) -> FloatArray:
         return np.asarray(self._x.copy(), dtype=np.float64)
 
-    def step(
-        self,
-        system: VortexSystem2D,
-        dt: float,
-        *,
-        integrator: Literal["euler", "rk2", "rk4"] = "rk4",
-    ) -> None:
+    def step(self, system: VortexSystem2D, dt: float, *, integrator: Literal["euler","rk2","rk4"]="rk4") -> None:
         x0 = self._x
         if integrator == "euler":
             u0 = system.velocities(x0)
-            self._x = x0 + dt * u0
+            self._x = x0 + dt*u0
         elif integrator == "rk2":
             k1 = system.velocities(x0)
-            k2 = system.velocities(x0 + 0.5 * dt * k1)
-            self._x = x0 + dt * k2
+            k2 = system.velocities(x0 + 0.5*dt*k1)
+            self._x = x0 + dt*k2
         elif integrator == "rk4":
             k1 = system.velocities(x0)
-            k2 = system.velocities(x0 + 0.5 * dt * k1)
-            k3 = system.velocities(x0 + 0.5 * dt * k2)
-            k4 = system.velocities(x0 + dt * k3)
-            self._x = x0 + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+            k2 = system.velocities(x0 + 0.5*dt*k1)
+            k3 = system.velocities(x0 + 0.5*dt*k2)
+            k4 = system.velocities(x0 + dt*k3)
+            self._x = x0 + (dt/6.0)*(k1 + 2*k2 + 2*k3 + k4)
         else:
             raise ValueError("integrator must be one of {'euler','rk2','rk4'}.")
-
 
 # ------------------------------
 # Plot helpers (unchanged API)
@@ -680,7 +757,6 @@ class AnimationConfig:
     figsize: tuple[float, float] = (8.0, 6.0)
     render_mode: Literal["quiver", "streamplot"] = "quiver"
     cbar_label: str = "Speed [m/s]"
-
 
 def plot_snapshot(
     system: VortexSystem2D,
@@ -707,16 +783,13 @@ def plot_snapshot(
         fig.colorbar(q, ax=ax, fraction=0.046, pad=0.04).set_label("Speed [m/s]")
     else:
         strm = ax.streamplot(
-            X,
-            Y,
-            U,
-            V,
-            density=1.2,
-            linewidth=1.0,
-            color=speed,
-            cmap="viridis",
-            arrowsize=1.0,
-        )
+        X, Y, U, V,
+        density=1.2,
+        linewidth=1.0,
+        color=speed,
+        cmap="viridis",
+        arrowsize=1.0,
+    )
         fig.colorbar(strm.lines, ax=ax, fraction=0.046, pad=0.04).set_label("Speed [m/s]")
 
     if show_particles:
@@ -739,7 +812,6 @@ def plot_snapshot(
     ax.set_ylabel("y [m]")
     ax.grid(True, alpha=0.2)
     plt.show()
-
 
 def run_animation(
     system: VortexSystem2D,
@@ -777,16 +849,13 @@ def run_animation(
         cax = fig.colorbar(quiv, ax=ax, fraction=0.046, pad=0.04)
     else:
         stream = ax.streamplot(
-            X,
-            Y,
-            U,
-            V,
-            density=1.2,
-            linewidth=1.0,
-            color=speed,
-            cmap="viridis",
-            arrowsize=1.0,
-        )
+        X, Y, U, V,
+        density=1.2,
+        linewidth=1.0,
+        color=speed,
+        cmap="viridis",
+        arrowsize=1.0,
+    )
         cax = fig.colorbar(stream.lines, ax=ax, fraction=0.046, pad=0.04)
 
     if cax is not None:
@@ -800,13 +869,9 @@ def run_animation(
         sizes = 30.0 * (g_abs / (g_abs.max() + 1e-15)) + 5.0
         colors = np.where(g >= 0.0, "tab:blue", "tab:red")
         particles_sc = ax.scatter(
-            x[:, 0],
-            x[:, 1],
-            s=sizes,
-            c=colors,
-            edgecolors="k",
-            linewidths=0.3,
-            alpha=0.85,
+            x[:, 0], x[:, 1],
+            s=sizes, c=colors,
+            edgecolors="k", linewidths=0.3, alpha=0.85,
         )
 
     tracers_sc = None
@@ -844,16 +909,13 @@ def run_animation(
                     except Exception:
                         pass
             new_stream = ax.streamplot(
-                X,
-                Y,
-                U,
-                V,
-                density=1.2,
-                linewidth=1.0,
-                color=speed,
-                cmap="viridis",
-                arrowsize=1.0,
-            )
+        X, Y, U, V,
+        density=1.2,
+        linewidth=1.0,
+        color=speed,
+        cmap="viridis",
+        arrowsize=1.0,
+    )
             if cax is not None:
                 cax.update_normal(new_stream.lines)
 

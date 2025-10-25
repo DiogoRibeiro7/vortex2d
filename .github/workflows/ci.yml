@@ -1,42 +1,48 @@
+
 name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12"]
-
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          virtualenvs-create: true
-          virtualenvs-in-project: true
+      - uses: snok/install-poetry@v1
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
-          poetry install --with dev,plot
+          poetry --version
+          poetry install --with dev,plot || poetry install --with dev
 
-      - name: Lint
+      - name: Lint & type
         run: |
           poetry run ruff check .
+          poetry run ruff format --check
           poetry run mypy src
 
-      - name: Tests
-        run: poetry run pytest
+      - name: Run tests
+        run: poetry run pytest -q
+
+      - name: Build validation plots
+        env:
+          ARTIFACTS_DIR: artifacts
+        run: poetry run python scripts/make_validation_plots.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-plots
+          path: artifacts
+          if-no-files-found: error

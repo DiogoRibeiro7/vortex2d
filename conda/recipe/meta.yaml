@@ -1,0 +1,47 @@
+
+{% set name = "vortex2d" %}
+{% set version = environ.get("GIT_DESCRIBE_TAG", "0.0.0") | replace("v","") %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  # sha256: <fill-in-after-first-release>
+
+build:
+  noarch: python
+  script: "{{ PYTHON }} -m pip install . -vv"
+
+requirements:
+  host:
+    - python >=3.10
+    - pip
+  run:
+    - python >=3.10
+    - numpy
+    - matplotlib
+    - packaging
+    # optional extras
+    - numba  # [not win]
+    - plotly
+
+test:
+  imports:
+    - vortex2d
+  commands:
+    - python -c "import vortex2d; print(vortex2d.__all__ is not None)"
+  requires:
+    - pip
+
+about:
+  home: https://github.com/<your-user>/<your-repo>
+  license: MIT
+  license_file: LICENSE
+  summary: "A lightweight 2D vortex particle method with Gaussian cores"
+  doc_url: https://<your-user>.github.io/<your-repo>
+
+extra:
+  recipe-maintainers:
+    - <your-github-handle>

@@ -1,13 +1,17 @@
+
 # vortex2d
 
-A minimal 2D vortex particle method (Gaussian-core) with RK4, viscosity, plotting, and animations.
+A lightweight 2D vortex particle method with Gaussian cores — written in Python, tested, and documented.
 
-## Install
+**Highlights**
+- Gaussian-core Biot–Savart with optional periodic FFT or treecode backends
+- Integrators: Euler, RK2, RK4 (+ adaptive RK2/3 variant)
+- Diffusion via core-spreading or PSE (particle strength exchange)
+- Remeshing & particle merging/splitting (experimental)
+- Optional Numba acceleration and chunked evaluation for large N
+- Matplotlib and Plotly visualizations
+
 ```bash
-poetry install --with plot
+pip install -e .[plot,dev]  # or via poetry groups
 ```
 
-## Quick Start
-```python
-from vortex2d import VortexSystem2D, PassiveTracers2D, plot_snapshot
-```
