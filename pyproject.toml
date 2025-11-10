@@ -19,7 +19,7 @@ matplotlib = { version = "^3.8.0", optional = true }
 plot = ["matplotlib"]
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^8.2.0"
+pytest = "^9.0.0"
 mypy = "^1.11.0"
 ruff = "^0.14.2"
 pre-commit = "^4.3.0"
